@@ -1813,6 +1813,211 @@ async def ban_from_rooms(client, rooms, users):
         logger.error("User ban failed. Sorry.")
         logger.debug("Here is the traceback.\n" + traceback.format_exc())
 
+async def superban_from_rooms(client, rooms, users):
+    """Ban one or multiple users from one or multiple rooms."""
+    try:
+        for room_id in rooms:
+            # room_id can be #roomAlias or !roomId
+            room_id = room_id.replace(r"\!", "!")  # remove possible escape
+            room_id = await map_roomalias_to_roomid(client, room_id)
+            for user in users:
+                # logger.debug(
+                #     f'Banning user "{user}" from room with '
+                #     f'room alias "{room_id}".'
+                # )
+                # resp = await client.room_ban(room_id, user)
+                # if isinstance(resp, RoomBanError):
+                #     logger.error(f"room_ban failed with {resp}")
+                # else:
+                #     logger.info(
+                #         f'User "{user}" was successfully banned '
+                #         f'from room "{room_id}".'
+                #     )
+                resp = await client.room_messages(
+                    room_id, start=resp_s.next_batch, limit=10, message_filter = {}
+                )
+                if isinstance(resp, RoomMessagesError):
+                    logger.debug("room_messages failed with resp = {resp}")
+                    continue  # skip this room
+                logger.debug(f"room_messages response = {type(resp)} :: {resp}.")
+                logger.debug(f"room_messages room_id = {resp.room_id}.")
+                logger.debug(f"room_messages start = (str) {resp.start}.")
+                logger.debug(f"room_messages end = (str) :: {resp.end}.")
+                logger.debug(f"room_messages chunk = (list) :: {resp.chunk}.")
+                # chunk is just a list of RoomMessage events like this example:
+                # chunk=[RoomMessageText(...)]
+        
+                for event in resp.chunk:
+                    logger.debug(f"sending event to callback = {event}.")
+                    if client.rooms and client.rooms[room_id]:
+                        room = client.rooms[room_id]
+                    else:
+                        room = MatrixRoom(room_id, None, True)  # dummy_room
+                    await callbacks.message_callback(room, event)
+                if resp.chunk:  # list not empty
+                    # order is reversed, first element is timewise the newest
+                    first_event = resp.chunk[1]
+                    resp = await client.room_read_markers(
+                        room_id=room_id,
+                        fully_read_event=first_event.event_id,
+                        read_event=first_event.event_id,
+                    )
+                    if isinstance(resp, RoomReadMarkersError):
+                        logger.debug(
+                            f"room_read_markers failed with response = {resp}."
+                        )
+                
+
+    except Exception:
+        logger.error("User ban failed. Sorry.")
+        logger.debug("Here is the traceback.\n" + traceback.format_exc())
+
+ # room_redact(room_id: str, event_id: str, reason: Optional[str] = None, tx_id: Union[None, str, uuid.UUID] = None) → Union[nio.responses.RoomRedactResponse, nio.responses.RoomRedactError][source]
+ # 
+ #    Strip information out of an event.
+ # 
+ #    Calls receive_response() to update the client state if necessary.
+ # 
+ #    Returns either a RoomRedactResponse if the request was successful or a RoomRedactError if there was an error with the request.
+ #    Parameters:	
+ # 
+ #        room_id (str) – The room id of the room that contains the event that will be redacted.
+ #        event_id (str) – The ID of the event that will be redacted.
+ #        tx_id (str/UUID, optional) – A transaction ID for this event.
+ #        reason (str, optional) – A description explaining why the event was redacted.
+
+
+
+async def manage_room(client, credentials, required_rooms, pargs):
+    """Kick one or multiple users from one or multiple rooms."""
+    try:
+        resp_s = await client.sync(timeout=10000, full_state=False)
+    except ClientConnectorError:
+        logger.info("sync() failed. Do you have connectivity to internet?")
+        logger.debug(traceback.format_exc())
+        return
+    except Exception:
+        logger.info("sync() failed.")
+        logger.debug(traceback.format_exc())
+        return
+    if isinstance(resp_s, SyncError):
+        logger.debug(f"sync failed with resp = {resp_s}")
+        return
+    # this prints a summary of all new messages currently waiting in the queue
+    logger.debug(f"sync response = {type(resp_s)} :: {resp_s}")
+    logger.debug(f"client.next_batch after = (str) {client.next_batch}")
+    logger.debug(f"sync next_batch = (str) {resp_s.next_batch}")
+#    logger.debug(f"sync rooms = (nio.responses.Rooms) {resp_s.rooms}")
+    logger.debug(f"client.rooms = {client.rooms}")
+    # this prints a summary of all new messages currently waiting in the queue
+    # logger.debug(f"sync response = {type(resp_s)} :: {resp_s}")
+    # logger.debug(f"client.next_batch after = (str) {client.next_batch}")
+    # logger.debug(f"sync next_batch = (str) {resp_s.next_batch}")
+    # logger.debug(f"sync rooms = (nio.responses.Rooms) {resp_s.rooms}")
+    # logger.debug(f"client.rooms = {client.rooms}")
+
+
+    # Set up event callbacks
+    # room_id = list(resp_s.rooms.join.keys())[0]  # first room_id from dict
+    # alternative way of getting room_id, client.rooms is also a dict
+    # room_id = list(client.rooms.keys())[0]  # first room_id from dict
+
+    # get rooms as specified by the user thru args or credential file
+#    rooms = determine_rooms(credentials["room_id"])
+#    rooms = determine_rooms(required_rooms)
+#    logger.debug(f"Rooms are: {rooms}")
+
+#    limit = pargs.tail
+    if pargs.tini:
+        tini = pargs.tini[0]
+    else:
+        import time
+        tini = int(1000*time.time())
+    
+    if pargs.tend:
+        tend = pargs.tend[0]
+    else:
+        tend = tini - 30*60*1000 # 30 minutes
+
+    logger.debug(f"considering from  {tini} to {tend}")
+
+
+    for room_id in required_rooms:
+        activeusers = {}
+        totalevent = 0
+        validevent = 0
+        mensajes = 0
+        # room_id can be #roomAlias or !roomId
+        room_id = room_id.replace(r"\!", "!")  # remove possible escape
+        room_id = await map_roomalias_to_roomid(client, room_id)
+
+        logger.debug(f"querying for  room_id:: {room_id}.")
+
+        start_batch = resp_s.next_batch
+        ldiff = 0
+        while ldiff < 600000:
+            resp = await client.room_messages(
+                room_id, start=start_batch, limit=30
+            )
+            if isinstance(resp, RoomMessagesError):
+                logger.debug("room_messages failed with resp = {resp}")
+                break  # skip this room
+            
+            start_batch = resp.end #next request follows 
+            
+            lastmg = None
+            for event in resp.chunk:
+                totalevent += 1
+                if event.server_timestamp > tini:
+                    diff =  event.server_timestamp - tini
+                    logger.debug(f"event ignored: ts: +{diff}")
+                    continue
+                if  event.server_timestamp < tend:
+                    diff =  tend-event.server_timestamp
+                    if diff > ldiff:
+                        ldiff = diff
+                        
+                    logger.debug(f"event ignored: ts: -{diff}")
+                    continue
+                
+                validevent += 1
+                if isinstance(event, RoomMessage):
+                    if pargs.user and event.sender in pargs.user and pargs.remove_match:
+                        remover = await client.room_redact(room_id=room_id, event_id=event.event_id, reason='Cleaning')
+                    elif pargs.user and event.sender in pargs.user:
+                        logger.info(f"{event.sender}: {event.body}")
+                    else:
+                        if event.sender in activeusers:
+                            activeusers[event.sender] += 1
+                        else:
+                            activeusers[event.sender] = 1
+                        lastmg = f"{event.sender}: {event.body}"
+                        ltm = event.server_timestamp
+                        mensajes += 1  # Extract the message text
+    
+            if lastmg is not None:
+                timestamp = datetime.datetime.fromtimestamp(
+                    int(ltm / 1000)
+                )  # sec since 1970
+                event_datetime = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+                # e.g. 2020-08-06 17:30:18
+
+                logger.info(f"[{event_datetime}] {lastmg}.")
+            logger.debug(f"room_messages room_id = {resp.room_id}.")
+            logger.debug(f"Total eventos {totalevent}.")
+            logger.debug(f"Eventos Validos {validevent}.")
+            logger.debug(f"Total mensajes {mensajes}.")
+            logger.debug(f"room_messages start = (str) {resp.start}.")
+            logger.debug(f"room_messages end = (str) :: {resp.end}.")
+        if activeusers:
+            logger.info( f"Featuring: " + " ".join(activeusers))
+
+
+        # chunk is just a list of RoomMessage events like this example:
+        # chunk=[RoomMessageText(...)]
+
+
+
 
 async def unban_from_rooms(client, rooms, users):
     """Unban one or multiple users from one or multiple rooms."""
@@ -2987,7 +3192,9 @@ async def main_listen() -> None:
         if client.should_upload_keys:
             await client.keys_upload()
         logger.debug(f"Listening type: {pargs.listen}")
-        if pargs.listen == FOREVER:
+        if pargs.room_manage:
+            await manage_room(client, credentials,  pargs.room_manage, pargs)
+        elif pargs.listen == FOREVER:
             await listen_forever(client)
         elif pargs.listen == ONCE:
             await listen_once(client)
@@ -3061,10 +3268,14 @@ async def main_room_actions() -> None:  # noqa: C901
             await leave_rooms(client, pargs.room_leave)
         if pargs.room_forget:
             await forget_rooms(client, pargs.room_forget)
+        if pargs.room_activity:
+            await activity_from_rooms(client, pargs.room_activity)
         if pargs.room_invite and pargs.user:
             await invite_to_rooms(client, pargs.room_invite, pargs.user)
         if pargs.room_ban and pargs.user:
             await ban_from_rooms(client, pargs.room_ban, pargs.user)
+        if pargs.room_superban and pargs.user:
+            await superban_from_rooms(client, pargs.room_superban, pargs.user)
         if pargs.room_unban and pargs.user:
             await unban_from_rooms(client, pargs.room_unban, pargs.user)
         if pargs.room_kick and pargs.user:
@@ -3072,6 +3283,7 @@ async def main_room_actions() -> None:  # noqa: C901
         if (
             pargs.room_invite
             or pargs.room_ban
+            or pargs.room_superban
             or pargs.room_unban
             or pargs.room_kick
         ) and not pargs.user:
@@ -3251,6 +3463,8 @@ def initial_check_of_args() -> None:  # noqa: C901
         or pargs.room_leave
         or pargs.room_forget
         or pargs.room_invite
+        or pargs.room_superban
+        or pargs.room_manage
         or pargs.room_ban
         or pargs.room_unban
         or pargs.room_kick
@@ -3338,12 +3552,12 @@ def initial_check_of_args() -> None:  # noqa: C901
             "done. No listening allowed. "
             "No room actions allowed."
         )
-    elif (pargs.user) and not room_action:
-        t = (
-            "If --user is specified, only room action can be "
-            "done. "
-            "Specify a room option like --room-create or remove --user."
-        )
+    # elif (pargs.user) and room_action:
+    #     t = (
+    #         "If --user is specified, only room action can be "
+    #         "done. "
+    #         "Specify a room option like --room-create or remove --user."
+    #     )
     elif (pargs.listen == ONCE or pargs.listen == FOREVER) and pargs.room:
         t = (
             "If --listen once or --listen forever are specified, "
@@ -3520,6 +3734,48 @@ if __name__ == "__main__":  # noqa: C901 # ignore mccabe if-too-complex
         "The user must have permissions to join these rooms.",
     )
     ap.add_argument(
+        "--room-manage",
+        required=False,
+        action="extend",
+        nargs="+",
+        type=str,
+        help="Manage room messages. "
+        "room aliases can be specified. The room (or multiple "
+        "ones). Will list the users who sent messages on the room"
+        "--remove-match allow to delete the messages of --user provded"
+        "you can modify timeperiod with --tini and --thend.",
+    )
+    ap.add_argument(
+        "--remove-match",
+        required=False,
+        action="store",
+        nargs=1,
+        type=int,
+        help="when set to 1, will delete all messages on the rooms "
+        "that were sent during the period by the specified --users "
+        "the user should have permission on the room to moderate",
+    )
+    ap.add_argument(
+        "--tini",
+        required=False,
+        action="store",
+        nargs=1,
+        type=int,
+        help="Server_timestamp to consider the event valid "
+        "All events prior to this timestamp will be ignored "
+        "the default value is now according to your pc",
+    )
+    ap.add_argument(
+        "--tend",
+        required=False,
+        action="store",
+        nargs=1,
+        type=int,
+        help="Server_timestamp to consider the event valid "
+        "All events after this timestamp will be ignored "
+        "the default value is 30 minutes after --tini",
+    )
+    ap.add_argument(
         "--room-leave",
         required=False,
         action="extend",
@@ -3565,6 +3821,18 @@ if __name__ == "__main__":  # noqa: C901 # ignore mccabe if-too-complex
         "Specify the user(s) as arguments to --user. "
         "Specify the rooms as arguments to this option, i.e. "
         "as arguments to --room-ban. "
+        "The user must have permissions to ban users.",
+    )
+    ap.add_argument(
+        "--room-superban",
+        required=False,
+        action="extend",
+        nargs="+",
+        type=str,
+        help="SuperBan one ore more users from one or more rooms. "
+        "Specify the user(s) as arguments to --user. "
+        "Specify the rooms as arguments to this option, i.e. "
+        "as arguments to --room-superban. "
         "The user must have permissions to ban users.",
     )
     ap.add_argument(
@@ -4024,15 +4292,18 @@ if __name__ == "__main__":  # noqa: C901 # ignore mccabe if-too-complex
             or pargs.listen == ONCE
             or pargs.listen == TAIL
             or pargs.listen == ALL
+            or pargs.room_manage
         ):
             asyncio.get_event_loop().run_until_complete(main_listen())
         elif (
             pargs.room_create
             or pargs.room_join
+            or pargs.room_manage
             or pargs.room_leave
             or pargs.room_forget
             or pargs.room_invite
             or pargs.room_ban
+            or pargs.room_superban
             or pargs.room_unban
             or pargs.room_kick
         ):
